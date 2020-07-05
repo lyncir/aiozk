@@ -2,13 +2,19 @@ import asyncio
 import logging
 
 from aiozk import exc, states, Deadline
-
 from .sequential import SequentialRecipe
 
+ZNODE_LABEL = 'lock'
 log = logging.getLogger(__name__)
 
 
 class BaseLock(SequentialRecipe):
+    def __init__(self, base_path):
+        super().__init__(base_path)
+        self._session_lost_future = None
+        self._alert_task = None
+        self._used = False
+
     async def wait_in_line(self, znode_label, timeout=None, blocked_by=None):
         deadline = Deadline(timeout)
         await self.create_unique_znode(znode_label)
@@ -84,6 +90,40 @@ class BaseLock(SequentialRecipe):
                 await on_exit()
 
         return Lock()
+
+    async def _acquire2(self, timeout=None):
+        if self._used:
+            raise ValueError('re-entrance is not permitted')
+
+        deadline = Deadline(timeout)
+        while True:
+            try:
+                await self.wait_in_line(ZNODE_LABEL, deadline.timeout)
+                break
+            except exc.SessionLost:
+                continue
+        self._session_lost_future = self.client.session.state.wait_for(
+            states.States.LOST)
+        self._alert_task = asyncio.create_task(self._alert_session_lost())
+        self._used = True
+
+    async def _alert_session_lost(self):
+        await self._session_lost_future
+        log.warning(
+            "Session expired at some point, lock %s no longer acquired.", self)
+
+    async def _release2(self):
+        if not self._session_lost_future.done():
+            self.client.session.state.remove_waiting(self._session_lost_future,
+                                                     states.States.LOST)
+            self._sesion_lost_future = None
+
+        if not self._alert_task.done():
+            self._alert_task.cancel()
+            self._alert_task = None
+
+        await self.delete_unique_znode(ZNODE_LABEL)
+        self._used = False
 
 
 class LockLostError(exc.ZKError):
