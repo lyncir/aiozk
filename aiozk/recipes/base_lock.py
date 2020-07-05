@@ -45,8 +45,6 @@ class BaseLock(SequentialRecipe):
                 await self.client.session.state.wait_for(states.States.CONNECTED)
                 continue
 
-        return self.make_contextmanager(znode_label)
-
     def make_contextmanager(self, znode_label):
         state = {"acquired": True}
 
