@@ -56,6 +56,7 @@ async def test_acquisition_failure_deadlock(zk, path):
         await lock2.ensure_path()
 
         lock2.analyze_siblings_orig = lock2.analyze_siblings
+
         # analyze_siblings() is called by .wait_in_line()
         async def analyze_siblings_fail(self):
             await self.analyze_siblings_orig()
@@ -109,3 +110,111 @@ async def test_timeout_accuracy(zk, path):
 
     assert not acquired
     assert elapsed < 1
+
+
+@pytest.mark.asyncio
+async def test_acquire_lock(zk, path):
+    lock = zk.recipes.Lock(path)
+    acquired = False
+    try:
+        async with await lock.acquire():
+            acquired = True
+
+        assert acquired
+    finally:
+        await zk.deleteall(path)
+
+
+@pytest.mark.asyncio
+async def test_async_context_manager(zk, path):
+    acquired = False
+    try:
+        async with zk.recipes.Lock(path, timeout=1):
+            acquired = True
+            await asyncio.sleep(1)
+
+        assert acquired
+    finally:
+        await zk.deleteall(path)
+
+
+@pytest.mark.asyncio
+async def test_async_context_manager_deadlock(zk, path):
+    acquired = False
+    acquired2 = False
+    try:
+        async with zk.recipes.Lock(path, timeout=1):
+            acquired = True
+
+            with pytest.raises(TimeoutError):
+                async with zk.recipes.Lock(path, timeout=1):
+                    acquired2 = True
+
+        assert acquired
+        assert not acquired2
+    finally:
+        await zk.deleteall(path)
+
+
+@pytest.mark.asyncio
+async def test_async_context_manager_reentrance(zk, path):
+    """re-entrance is not permitted"""
+    lock = zk.recipes.Lock(path, timeout=1)
+    acquired = False
+    acquired2 = False
+    try:
+        async with lock:
+            acquired = True
+            with pytest.raises(ValueError):
+                async with lock:
+                    acquired2 = True
+
+        assert acquired
+        assert not acquired2
+    finally:
+        await zk.deleteall(path)
+
+
+@pytest.mark.asyncio
+async def test_async_context_manager_reuse(zk, path):
+    lock = zk.recipes.Lock(path, timeout=1)
+    acquired = False
+    acquired2 = False
+    try:
+        async with lock:
+            acquired = True
+
+        async with lock:
+            acquired2 = True
+
+        assert acquired
+        assert acquired2
+    finally:
+        await zk.deleteall(path)
+
+
+@pytest.mark.asyncio
+async def test_async_context_manager_contention(zk, path):
+    CONTENDERS = 8
+    done = 0
+    cond = asyncio.Condition()
+
+    async def create_contender():
+        async with zk.recipes.Lock(path):
+            async with cond:
+                await asyncio.sleep(0.1)
+                nonlocal done
+                done += 1
+                cond.notify()
+
+    for _ in range(CONTENDERS):
+        asyncio.create_task(create_contender())
+
+    try:
+        async with cond:
+            await asyncio.wait_for(cond.wait_for(lambda: done == CONTENDERS),
+                                   timeout=2)
+
+        assert CONTENDERS == done
+    finally:
+        await zk.deleteall(path)
