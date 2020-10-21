@@ -7,7 +7,7 @@ from aiozk.states import States
 import pytest
 import asynctest
 
-from aiozk import exc
+from aiozk import exc, protocol
 
 
 @pytest.fixture
@@ -28,6 +28,15 @@ def session(event_loop):
     session.ensure_safe_state = asynctest.CoroutineMock()
     session.set_heartbeat = mock.Mock()
     return session
+
+
+@pytest.fixture
+def retry_policy():
+    with mock.patch('aiozk.session.RetryPolicy') as rpcls:
+        rp = rpcls.exponential_backoff.return_value
+        enforce = asynctest.CoroutineMock(side_effect=lambda: asyncio.sleep(0))
+        rp.enforce = enforce
+        yield rp
 
 
 def prepare_repair_loop_callback_done_future(session):
@@ -213,3 +222,52 @@ async def test_duplicated_heartbeat_task(servers, event_loop):
     finally:
         await session.state.wait_for(States.CONNECTED)
         await session.close()
+
+
+@pytest.mark.asyncio
+async def test_send_timeout(servers, event_loop, path):
+    session = aiozk.session.Session(servers, 3, None, False, None, event_loop)
+    await session.start()
+    await session.state.wait_for(States.CONNECTED)
+    # Simulate that response is delayed
+    session.conn.read_loop_task.cancel()
+
+    await asyncio.sleep(0.1)
+
+    nonode_path = path
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(session.send(
+            protocol.ExistsRequest(path=nonode_path, watch=False)),
+                               timeout=0.1)
+
+    await asyncio.sleep(0.1)
+    session.conn.start_read_loop()
+    try:
+        with pytest.raises(exc.NoNode):
+            await asyncio.wait_for(session.send(
+                protocol.ExistsRequest(path=nonode_path, watch=False)),
+                                   timeout=session.timeout + 1)
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_find_server(session, retry_policy):
+    session.make_connection = asynctest.CoroutineMock()
+    conn = mock.MagicMock()
+    conn.close = asynctest.CoroutineMock()
+    conn.start_read_only = True
+    session.make_connection.return_value = conn
+
+    task = session.loop.create_task(session.find_server(allow_read_only=False))
+
+    async def _wait_for():
+        while retry_policy.enforce.await_count < 4:
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(_wait_for(), 1)
+    assert not task.done(), 'find_server should not finish '
+    task.cancel()
+
+    conn.start_read_only = False
+    await session.find_server(allow_read_only=False)

@@ -1,4 +1,5 @@
 from aiozk import protocol
+from aiozk.exc import TransactionFailed
 
 
 class Transaction:
@@ -68,6 +69,17 @@ class Transaction:
 
         return result
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exception, tb):
+        # propagate error by returning None
+        if exception:
+            return
+        result = await self.commit()
+        if not result:
+            raise TransactionFailed
+
 
 class Result:
 
@@ -84,6 +96,3 @@ class Result:
             len(self.updated),
             len(self.deleted),
         ]) > 0
-
-    def __nonzero__(self):
-        return self.__bool__()
