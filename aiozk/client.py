@@ -23,15 +23,18 @@ class ZKClient:
         allow_read_only=False,
         read_timeout=None,
         loop=None,
+        auth_data=None,
     ):
         self.loop = loop or asyncio.get_event_loop()
         self.chroot = None
+        self.auth_data = auth_data
         if chroot:
             self.chroot = self.normalize_path(chroot)
             log.info("Using chroot '%s'", self.chroot)
 
         self.session = Session(
-            servers, session_timeout, retry_policy, allow_read_only, read_timeout, loop=self.loop
+            servers, session_timeout, retry_policy, allow_read_only,
+            read_timeout, loop=self.loop, auth_data=self.auth_data,
         )
 
         self.default_acl = default_acl or [protocol.UNRESTRICTED_ACCESS]

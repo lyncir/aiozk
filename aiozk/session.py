@@ -22,7 +22,8 @@ log = logging.getLogger(__name__)
 
 class Session:
 
-    def __init__(self, servers, timeout, retry_policy, allow_read_only, read_timeout, loop):
+    def __init__(self, servers, timeout, retry_policy, allow_read_only,
+                 read_timeout, loop, auth_data=None):
         self.loop = loop
         self.hosts = []
         for server in servers.split(","):
@@ -62,6 +63,7 @@ class Session:
 
         self.started = False
         self.closing = False
+        self.auth_data = auth_data
 
     async def ensure_safe_state(self, writing=False):
         safe_states = [States.CONNECTED]
@@ -199,6 +201,12 @@ class Session:
                 self.state.transition_to(States.CONNECTED)
 
             self.conn.start_read_loop()
+
+            # TODO: 增加验证
+            if self.auth_data:
+                request = protocol.AuthRequest(type=0, scheme='digest', auth=self.auth_data)
+                await self.send(request)
+
             await self.set_existing_watches()
 
     async def send(self, request):
